@@ -1,5 +1,3 @@
-'use strict';
-
 var os = require('os');
 var nodeStatic = require('node-static');
 var http = require('http');
@@ -11,56 +9,95 @@ var app = http.createServer(function(req, res) {
 }).listen(3030);
 
 var io = socketIO.listen(app);
-io.sockets.on('connection', function(socket) {
 
-  // convenience function to console.log server messages on the client
-  function log() {
-    var array = ['Message from server:'];
-    array.push.apply(array, arguments);
-    socket.emit('console.log', array);
-  }
+/*************************/
+/*** INTERESTING STUFF ***/
+/*************************/
+var channels = {};
+var sockets = {};
 
-  socket.on('message', function(message) {
-    console.log('Client said: ', message);
-    // for a real app, would be room-only (not broadcast)
-    socket.broadcast.emit('message', message);
-  });
+/**
+ * Users will connect to the signaling server, after which they'll issue a "join"
+ * to join a particular channel. The signaling server keeps track of all sockets
+ * who are in a channel, and on join will send out 'addPeer' events to each pair
+ * of users in a channel. When clients receive the 'addPeer' even they'll begin
+ * setting up an RTCPeerConnection with one another. During this process they'll
+ * need to relay ICECandidate information to one another, as well as SessionDescription
+ * information. After all of that happens, they'll finally be able to complete
+ * the peer connection and will be streaming audio/video between eachother.
+ */
+io.sockets.on('connection', function (socket) {
+    socket.channels = {};
+    sockets[socket.id] = socket;
 
-  socket.on('create or join', function(room) {
-    console.log('Received request to create or join room ' + room);
-
-    var numClients = Object.keys(io.sockets.sockets).length;
-    console.log('Room ' + room + ' now has ' + numClients + ' client(s)');
-
-    if (numClients === 1) {
-      socket.join(room);
-      console.log('Client ID ' + socket.id + ' created room ' + room);
-      socket.emit('created', room, socket.id);
-    } else if (numClients === 2) {
-      console.log('Client ID ' + socket.id + ' joined room ' + room);
-      // io.sockets.in(room).emit('join', room);
-      socket.join(room);
-      socket.emit('joined', room, socket.id);
-      io.sockets.in(room).emit('ready', room);
-      socket.broadcast.emit('ready', room);
-    } else { // max two clients
-      socket.emit('full', room);
-    }
-  });
-
-  socket.on('ipaddr', function() {
-    var ifaces = os.networkInterfaces();
-    for (var dev in ifaces) {
-      ifaces[dev].forEach(function(details) {
-        if (details.family === 'IPv4' && details.address !== '127.0.0.1') {
-          socket.emit('ipaddr', details.address);
+    console.log("["+ socket.id + "] connection accepted");
+    socket.on('disconnect', function () {
+        for (var channel in socket.channels) {
+            part(channel);
         }
-      });
+        console.log("["+ socket.id + "] disconnected");
+        delete sockets[socket.id];
+    });
+
+
+    socket.on('join', function (config) {
+        console.log("["+ socket.id + "] join ", config);
+        var channel = config.channel;
+        var userdata = config.userdata;
+
+        if (channel in socket.channels) {
+            console.log("["+ socket.id + "] ERROR: already joined ", channel);
+            return;
+        }
+
+        if (!(channel in channels)) {
+            channels[channel] = {};
+        }
+
+        for (id in channels[channel]) {
+            channels[channel][id].emit('addPeer', {'peer_id': socket.id, 'should_create_offer': false});
+            socket.emit('addPeer', {'peer_id': id, 'should_create_offer': true});
+        }
+
+        channels[channel][socket.id] = socket;
+        socket.channels[channel] = channel;
+    });
+
+    function part(channel) {
+        console.log("["+ socket.id + "] part ");
+
+        if (!(channel in socket.channels)) {
+            console.log("["+ socket.id + "] ERROR: not in ", channel);
+            return;
+        }
+
+        delete socket.channels[channel];
+        delete channels[channel][socket.id];
+
+        for (id in channels[channel]) {
+            channels[channel][id].emit('removePeer', {'peer_id': socket.id});
+            socket.emit('removePeer', {'peer_id': id});
+        }
     }
-  });
+    socket.on('part', part);
 
-  socket.on('bye', function(){
-    console.console.log('received bye');
-  });
+    socket.on('relayICECandidate', function(config) {
+        var peer_id = config.peer_id;
+        var ice_candidate = config.ice_candidate;
+        console.log("["+ socket.id + "] relaying ICE candidate to [" + peer_id + "] ", ice_candidate);
 
+        if (peer_id in sockets) {
+            sockets[peer_id].emit('iceCandidate', {'peer_id': socket.id, 'ice_candidate': ice_candidate});
+        }
+    });
+
+    socket.on('relaySessionDescription', function(config) {
+        var peer_id = config.peer_id;
+        var session_description = config.session_description;
+        console.log("["+ socket.id + "] relaying session description to [" + peer_id + "] ", session_description);
+
+        if (peer_id in sockets) {
+            sockets[peer_id].emit('sessionDescription', {'peer_id': socket.id, 'session_description': session_description});
+        }
+    });
 });

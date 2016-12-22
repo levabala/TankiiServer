@@ -1,17 +1,16 @@
-'use strict';
 var isInitiator;
-var configuration = null;
 
+/****************************************************************************
+* Signaling server
+****************************************************************************/
+
+var configuration = null;
+var MY_INDEX = 0;
 var isInitiator;
 var room = window.location.hash.substring(1);
 if (!room) {
   room = window.location.hash = randomToken();
 }
-
-
-/****************************************************************************
-* Signaling server
-****************************************************************************/
 
 // Connect to the signaling server
 var socket = io.connect('http://127.0.0.1:3030');
@@ -22,12 +21,14 @@ socket.on('ipaddr', function(ipaddr) {
 });
 
 socket.on('created', function(room, clientId) {
+  console.log('Room ' + room + ' was created' + '. Your CLIENT_ID: ' + clientId);
   isInitiator = true;
 });
 
 socket.on('joined', function(room, clientId) {
+  console.log('You have joined to room ' + room + '. Your CLIENT_ID: ' + clientId);
   isInitiator = false;
-  createPeerConnection(isInitiator, configuration);
+  createPeerConnection(isInitiator, configuration, clientId);
 });
 
 socket.on('full', function(room) {
@@ -36,8 +37,8 @@ socket.on('full', function(room) {
   window.location.reload();
 });
 
-socket.on('ready', function() {
-  createPeerConnection(isInitiator, configuration);
+socket.on('ready', function(clientId) {
+  createPeerConnection(isInitiator, configuration, clientId);
 });
 
 socket.on('log', function(array) {
@@ -61,19 +62,18 @@ function sendMessage(message) {
   socket.emit('message', message);
 }
 
-
-var peerConn;
-var dataChannel;
+var connections = {} //peerConnection : dataChannel
 
 function signalingMessageCallback(message) {
+  console.log(message)
   if (message.type === 'offer') {
     peerConn.setRemoteDescription(new RTCSessionDescription(message), function() {},
-                                  function(){console.error('setRemoteDescription error')});
-    peerConn.createAnswer(onLocalSessionCreated, function(){console.error('createAnswer error')});
+                                  function(err){console.error('setRemoteDescription error',err)});
+    peerConn.createAnswer(onLocalSessionCreated, function(err){console.error('createAnswer error',err)});
 
   } else if (message.type === 'answer') {
     peerConn.setRemoteDescription(new RTCSessionDescription(message), function() {},
-                                  function(){console.error('setRemoteDescription error')});
+                                  function(err){console.error('setRemoteDescription error',err)});
         }
   else if (message.type === 'candidate') {
       peerConn.addIceCandidate(new RTCIceCandidate({
@@ -85,8 +85,11 @@ function signalingMessageCallback(message) {
            }
 }
 
-function createPeerConnection(isInitiator, config) {
+var counter = 0;
+function createPeerConnection(isInitiator, config, clientId) {
   peerConn = new RTCPeerConnection(config);
+  var dataChannel = {setted: false};
+  connections[clientId] = {dataChannel: dataChannel, peerConnection: peerConn};
 
   // send any ice candidates to the other peer
   peerConn.onicecandidate = function(event) {
@@ -98,32 +101,33 @@ function createPeerConnection(isInitiator, config) {
         candidate: event.candidate.candidate
       });
     }
+    console.log('ICECandidate:',event)
   };
 
   if (isInitiator) {
-    dataChannel = peerConn.createDataChannel('photos');
-    onDataChannelCreated(dataChannel);
+    connections[clientId].dataChannel = peerConn.createDataChannel('channel');
+    onDataChannelCreated(connections[clientId].dataChannel);
 
-    peerConn.createOffer(onLocalSessionCreated, function(){console.error('createOffer error')});
+    peerConn.createOffer(onLocalSessionCreated, function(err){console.error('createOffer error',err)});
   } else {
     peerConn.ondatachannel = function(event) {
-      dataChannel = event.channel;
-      onDataChannelCreated(dataChannel);
+      connections[clientId].dataChannel = event.channel;
+      onDataChannelCreated(connections[clientId].dataChannel);
     };
   }
-  }
+}
 
   function onLocalSessionCreated(desc) {
     peerConn.setLocalDescription(desc, function() {
       sendMessage(peerConn.localDescription);
-    }, function(){console.error('setLocalDescription error')});
+    }, function(err){console.error('setLocalDescription error',err)});
   }
 
   function onDataChannelCreated(channel) {
 
     channel.onopen = function() {
       console.log('Channel opened!');
-      channel.send("Hello World!");
+      channel.send({type: 'connection', value: 'connected'});
     };
 
     channel.onmessage = (adapter.browserDetails.browser === 'firefox') ?
