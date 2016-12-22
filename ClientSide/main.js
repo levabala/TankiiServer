@@ -26,7 +26,9 @@ initWebRtc();
 
 
 
-function
+function initTanksRoom(){
+  
+}
 
 
 function initWebRtc() {
