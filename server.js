@@ -14,6 +14,7 @@ var io = socketIO.listen(app);
 /*** INTERESTING STUFF ***/
 /*************************/
 var channels = {};
+var creators = {};
 var sockets = {};
 
 /**
@@ -27,6 +28,7 @@ var sockets = {};
  * the peer connection and will be streaming audio/video between eachother.
  */
 io.sockets.on('connection', function (socket) {
+    console.log(channels)
     socket.channels = {};
     sockets[socket.id] = socket;
 
@@ -37,6 +39,7 @@ io.sockets.on('connection', function (socket) {
         }
         console.log("["+ socket.id + "] disconnected");
         delete sockets[socket.id];
+        console.log(channels)
     });
 
 
@@ -51,15 +54,18 @@ io.sockets.on('connection', function (socket) {
         }
 
         if (!(channel in channels)) {
-            channels[channel] = {};
+            channels[channel] = {peers: {}, creator: socket.id};
+            socket.emit('NowYouAreHost');
+            console.log('New Channel Created. Creator:', socket.id)
+        }
+        else socket.emit('JoinedToTheRoom', {hostId: channels[channel].creator});
+
+        for (id in channels[channel].peers) {
+            channels[channel].peers[id].emit('addPeer', {'peer_id': socket.id, 'should_create_offer': false});
+            socket.emit('addPeer', {'peer_id': id, 'should_create_offer': true, 'creator': channels[channel].creator});
         }
 
-        for (id in channels[channel]) {
-            channels[channel][id].emit('addPeer', {'peer_id': socket.id, 'should_create_offer': false});
-            socket.emit('addPeer', {'peer_id': id, 'should_create_offer': true});
-        }
-
-        channels[channel][socket.id] = socket;
+        channels[channel].peers[socket.id] = socket;
         socket.channels[channel] = channel;
     });
 
@@ -72,11 +78,28 @@ io.sockets.on('connection', function (socket) {
         }
 
         delete socket.channels[channel];
-        delete channels[channel][socket.id];
+        delete channels[channel].peers[socket.id];
 
-        for (id in channels[channel]) {
-            channels[channel][id].emit('removePeer', {'peer_id': socket.id});
+
+        if (socket.id == channels[channel].creator){
+          console.log('Channel [',channel,'] has been closed')
+          for (id in channels[channel].peers) {
+              channels[channel].peers[id].emit('RoomClosed');
+              delete sockets[id].channels[channel];
+            }
+          delete channels[channel];
+          return;
+        }
+
+        for (id in channels[channel].peers) {
+            channels[channel].peers[id].emit('removePeer', {'peer_id': socket.id});
             socket.emit('removePeer', {'peer_id': id});
+            return;
+        }
+
+        if (Object.keys(channels[channel].peers).length == 0){
+          delete channels[channel];
+          return;
         }
     }
     socket.on('part', part);
@@ -84,7 +107,7 @@ io.sockets.on('connection', function (socket) {
     socket.on('relayICECandidate', function(config) {
         var peer_id = config.peer_id;
         var ice_candidate = config.ice_candidate;
-        console.log("["+ socket.id + "] relaying ICE candidate to [" + peer_id + "] ", ice_candidate);
+        //console.log("["+ socket.id + "] relaying ICE candidate to [" + peer_id + "] ", ice_candidate);
 
         if (peer_id in sockets) {
             sockets[peer_id].emit('iceCandidate', {'peer_id': socket.id, 'ice_candidate': ice_candidate});
@@ -94,7 +117,7 @@ io.sockets.on('connection', function (socket) {
     socket.on('relaySessionDescription', function(config) {
         var peer_id = config.peer_id;
         var session_description = config.session_description;
-        console.log("["+ socket.id + "] relaying session description to [" + peer_id + "] ", session_description);
+        //console.log("["+ socket.id + "] relaying session description to [" + peer_id + "] ", session_description);
 
         if (peer_id in sockets) {
             sockets[peer_id].emit('sessionDescription', {'peer_id': socket.id, 'session_description': session_description});
