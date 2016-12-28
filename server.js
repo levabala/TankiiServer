@@ -31,6 +31,7 @@ io.sockets.on('connection', function (socket) {
     console.log(channels)
     socket.channels = {};
     sockets[socket.id] = socket;
+    sendServersList();
 
     console.log("["+ socket.id + "] connection accepted");
     socket.on('disconnect', function () {
@@ -42,6 +43,16 @@ io.sockets.on('connection', function (socket) {
         console.log(channels)
     });
 
+    socket.on('getServers', function(){
+      sendServersList();
+    });
+
+    function sendServersList(){
+      var list = [];
+      for (var c in channels)
+        list.push(c)
+      socket.emit('Servers', list)
+    }
 
     socket.on('join', function (config) {
         console.log("["+ socket.id + "] join ", config);
